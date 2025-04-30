@@ -220,7 +220,7 @@ func finalizeOutput(tempdir string, numReduce int) error {
 	for i := 0; i < numReduce; i++ {
 		paths = append(paths, filepath.Join(tempdir, reduceOutputFile(i)))
 	}
-	finalPath := filepath.Join(tempdir, "final_output.db")
+	finalPath := filepath.Join(".", "final_output.db")
 	log.Println("[master] merging reduce outputs into final database.")
 	if err := mergeFinalOutput(paths, finalPath); err != nil {
 		log.Printf("[master] failed to merge final output: %v", err)
