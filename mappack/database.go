@@ -1,4 +1,4 @@
-package main
+package mappack
 
 import (
 	"database/sql"

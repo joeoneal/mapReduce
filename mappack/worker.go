@@ -1,4 +1,4 @@
-package main
+package mappack
 
 import (
 	"database/sql"
@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"net/rpc"
+	"time"
 )
 
 type MapTask struct {
@@ -445,3 +447,94 @@ func main() {
 	log.Printf("done")
 
 }
+
+///////////////////////////
+
+
+func requestTaskFromMaster(masterAddr, workerAddr string) (*TaskReply, error) {
+	client, err := rpc.Dial("tcp", masterAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to master: %v", err)
+	}
+	defer client.Close()
+
+	request := TaskRequest{WorkerAddress: workerAddr}
+	var reply TaskReply
+	if err := client.Call("MasterRPC.RequestTask", request, &reply); err != nil {
+		return nil, fmt.Errorf("RPC call failed: %v", err)
+	}
+	return &reply, nil
+}
+
+// runWorker initializes the worker node, starts the HTTP file server, and polls the master for tasks.
+func runWorker(client Interface, cfg StartConfig) error {
+	tempDir := filepath.Join(os.TempDir(), "mapreduce.3410")
+	if err := ensureTempDir(tempDir); err != nil {
+		return err
+	}
+
+	workerAddr := fmt.Sprintf("localhost:%d", cfg.Port)
+	if err := startFileServer(workerAddr, tempDir); err != nil {
+		return err
+	}
+
+	return pollForTasks(cfg.MasterAddr, workerAddr, tempDir, client)
+}
+
+// ensureTempDir ensures the temp directory exists.
+func ensureTempDir(path string) error {
+	if err := os.MkdirAll(path, 0700); err != nil {
+		return fmt.Errorf("failed to ensure temp directory: %v", err)
+	}
+	return nil
+}
+
+// startFileServer serves files over HTTP from the given directory.
+func startFileServer(address, dir string) error {
+	http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir(dir))))
+
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to bind HTTP server to %s: %v", address, err)
+	}
+
+	log.Printf("Worker serving files at %s", address)
+	go http.Serve(listener, nil)
+	return nil
+}
+
+// pollForTasks continually requests tasks from the master and processes them.
+func pollForTasks(masterAddr, workerAddr, tempDir string, client Interface) error {
+	for {
+		time.Sleep(1 * time.Second) // Prevent tight spin loop
+
+		reply, err := requestTaskFromMaster(masterAddr, workerAddr)
+		if err != nil {
+			log.Printf("Worker: error requesting task: %v", err)
+			continue
+		}
+
+		switch reply.Type {
+		case "map":
+			log.Printf("Worker received map task %d", reply.MapTask.N)
+			if err := reply.MapTask.Process(tempDir, client); err != nil {
+				log.Printf("Worker: error processing map task: %v", err)
+			}
+
+		case "reduce":
+			log.Printf("Worker received reduce task %d", reply.ReduceTask.N)
+			if err := reply.ReduceTask.Process(tempDir, client); err != nil {
+				log.Printf("Worker: error processing reduce task: %v", err)
+			}
+
+		case "none":
+			log.Println("Worker: no more tasks, shutting down.")
+			return nil
+
+		default:
+			log.Printf("Worker: unknown task type: %s", reply.Type)
+		}
+	}
+}
+
+
